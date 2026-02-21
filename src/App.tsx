@@ -8,46 +8,20 @@ const triggerHaptic = (pattern: number | number[]) => {
   }
 };
 
-const playTTS = (text: string, onEnd?: () => void) => {
-  if (!('speechSynthesis' in window)) {
-    console.warn('TTS is not supported in this browser.');
-    if (onEnd) onEnd();
-    return;
-  }
-
-  window.speechSynthesis.cancel();
+const unlockAudioContext = () => {
+  if (!('speechSynthesis' in window)) return;
   
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = 'ko-KR';
-  utterance.rate = 1.0;
-  utterance.pitch = 0.8;
-  
-  if (onEnd) {
-    utterance.onend = onEnd;
-    utterance.onerror = onEnd; 
-  }
-  
-  // Prevent Garbage Collection
-  (window as any).__ttsUtterance = utterance;
-  
-  setTimeout(() => {
-    window.speechSynthesis.speak(utterance);
-  }, 10);
-};
-
-const stopTTS = () => {
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
+  const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+  if (AudioContext) {
+    const ctx = new AudioContext();
+    const oscillator = ctx.createOscillator();
+    oscillator.connect(ctx.destination);
+    oscillator.start(0);
+    oscillator.stop(0.001);
   }
 };
 
 type TimerStatus = 'STANDBY' | 'RUNNING_60' | 'INTERRUPT_SPEECH' | 'RUNNING_5';
-
-const unlockAudioContext = () => {
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.resume();
-  }
-};
 
 export default function App() {
   const { requestWakeLock, releaseWakeLock } = useWakeLock();
@@ -56,7 +30,61 @@ export default function App() {
   const [activeNarrator, setActiveNarrator] = useState<number | null>(null);
 
   const timerRef = useRef<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const bgmRef = useRef<HTMLAudioElement | null>(null);
   const speechTimeoutRef = useRef<number | null>(null);
+
+  // Initialize BGM
+  useEffect(() => {
+    bgmRef.current = new Audio('/audio/bgm.wav');
+    bgmRef.current.loop = true;
+    bgmRef.current.volume = 0.3; // Lower volume for background
+    return () => {
+      if (bgmRef.current) {
+        bgmRef.current.pause();
+        bgmRef.current = null;
+      }
+    };
+  }, []);
+
+  const playBGM = useCallback(() => {
+    if (bgmRef.current) {
+      bgmRef.current.currentTime = 0;
+      bgmRef.current.play().catch(e => console.log('BGM play failed:', e));
+    }
+  }, []);
+
+  const stopBGM = useCallback(() => {
+    if (bgmRef.current) {
+      bgmRef.current.pause();
+    }
+  }, []);
+
+  const playAudio = useCallback((filename: string, onEnd?: () => void) => {
+    // Stop previous audio
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+
+    const audio = new Audio(`/audio/timer/${filename}.mp3`);
+    audioRef.current = audio;
+    
+    if (onEnd) {
+      audio.onended = onEnd;
+      // Fallback if audio fails or takes too long
+      audio.onerror = onEnd;
+    }
+
+    audio.play().catch(e => console.error("Audio play failed", e));
+  }, []);
+
+  const stopAudio = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+  }, []);
 
   const narratorPhases = [
     { id: 1, label: '게임 시작', text: '게임을 시작합니다. 모두 눈을 감아주세요.' },
@@ -74,26 +102,27 @@ export default function App() {
 
   const start5sCountdown = useCallback(() => {
     clearAllTimers();
-    playTTS('5');
+    playAudio('5'); // Play "5"
     timerRef.current = window.setInterval(() => {
       setTimeLeft((prev) => {
         const nextTime = prev - 1;
-        if (nextTime <= 0) {
+        if (nextTime < 0) { // Changed from <= 0 to < 0 to show 0
           clearAllTimers();
           setTimerStatus('STANDBY');
           setTimeLeft(60);
+          stopBGM();
           return 0;
         }
-        playTTS(nextTime.toString());
+        playAudio(nextTime.toString());
         return nextTime;
       });
     }, 1000);
-  }, [clearAllTimers]);
+  }, [clearAllTimers, playAudio, stopBGM]);
 
   const startInterruptSequence = useCallback(() => {
     setTimerStatus('INTERRUPT_SPEECH');
     setTimeLeft(5); 
-    triggerHaptic([50, 50, 50]); // Warning vibration pattern
+    triggerHaptic([50, 50, 50]); 
     
     let isEnded = false;
     const onEnd = () => {
@@ -110,19 +139,20 @@ export default function App() {
       });
     };
 
-    playTTS('모든 참가자는 5초 뒤 눈을 떠주세요.', onEnd);
-    speechTimeoutRef.current = window.setTimeout(onEnd, 4500); 
-  }, [start5sCountdown]);
+    playAudio('interrupt', onEnd);
+    speechTimeoutRef.current = window.setTimeout(onEnd, 5500); 
+  }, [start5sCountdown, playAudio]);
 
   const handleTimerClick = () => {
-    unlockAudioContext(); // Ensure audio is unlocked on first touch
-    triggerHaptic(10); // Short tick feedback
+    unlockAudioContext(); 
+    triggerHaptic(10); 
     if (timerStatus === 'STANDBY') {
-      requestWakeLock(); // Screen stays on
+      requestWakeLock(); 
       clearAllTimers();
       setTimerStatus('RUNNING_60');
       setTimeLeft(60);
-      playTTS('60');
+      playAudio('60');
+      playBGM();
       
       timerRef.current = window.setInterval(() => {
         setTimeLeft((prev) => {
@@ -132,7 +162,7 @@ export default function App() {
             startInterruptSequence();
             return 0;
           }
-          playTTS(nextTime.toString());
+          playAudio(nextTime.toString());
           return nextTime;
         });
       }, 1000);
@@ -142,10 +172,11 @@ export default function App() {
       startInterruptSequence();
     } else if (timerStatus === 'INTERRUPT_SPEECH' || timerStatus === 'RUNNING_5') {
       clearAllTimers();
-      stopTTS();
+      stopAudio();
+      stopBGM();
       setTimerStatus('STANDBY');
       setTimeLeft(60);
-      releaseWakeLock(); // Allow screen sleep
+      releaseWakeLock(); 
     }
   };
 
@@ -156,14 +187,15 @@ export default function App() {
     
     if (timerStatus !== 'STANDBY') {
       clearAllTimers();
-      stopTTS();
+      stopAudio();
+      stopBGM();
       setTimerStatus('STANDBY');
       setTimeLeft(60);
       releaseWakeLock();
     }
 
-    playTTS(text);
-
+    // Placeholder for narrator audio
+    console.log(`Playing narrator ${id}: ${text}`);
     setTimeout(() => {
       setActiveNarrator(null);
     }, 4000);
@@ -172,9 +204,10 @@ export default function App() {
   useEffect(() => {
     return () => {
       clearAllTimers();
-      stopTTS();
+      stopAudio();
+      stopBGM();
     };
-  }, [clearAllTimers]);
+  }, [clearAllTimers, stopAudio, stopBGM]);
 
   const radius = 96;
   const circumference = 2 * Math.PI * radius;
@@ -197,9 +230,9 @@ export default function App() {
     }
   };
 
-  // --- Style Logic Separated for Stability ---
+  // --- Style Logic ---
   const timerButtonClass = [
-    "relative flex items-center justify-center w-56 h-56 rounded-full transition-all duration-300",
+    "relative flex items-center justify-center w-[60vmin] h-[60vmin] rounded-full transition-all duration-300",
     timerStatus === 'RUNNING_60' ? 'shadow-[0_0_30px_rgba(255,140,0,0.3)]' : '',
     isInterruptGroup ? 'shadow-[0_0_40px_rgba(239,68,68,0.4)]' : ''
   ].join(' ');
@@ -230,7 +263,7 @@ export default function App() {
         
         {/* Adjusted Crosshair Focus matching the image */}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-50">
-          <div className="w-[320px] h-[320px] relative">
+          <div className="w-[85vmin] h-[85vmin] relative">
             <div className="crosshair-corner crosshair-tl"></div>
             <div className="crosshair-corner crosshair-tr"></div>
             <div className="crosshair-corner crosshair-bl"></div>
@@ -242,28 +275,28 @@ export default function App() {
           onClick={handleTimerClick}
           className={timerButtonClass}
         >
-          <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none">
-            {/* Base orange ring matching the image */}
-            <circle cx="112" cy="112" r={radius} fill="transparent" stroke="#ff8c00" strokeWidth="4" />
+          <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none" viewBox="0 0 300 300">
+            {/* Base orange ring */}
+            <circle cx="150" cy="150" r="120" fill="transparent" stroke="#ff8c00" strokeWidth="6" />
             
-            {/* Decreasing dark overlay ring for countdown effect */}
+            {/* Decreasing dark overlay ring */}
             <circle
-              cx="112" cy="112" r={radius} fill="transparent"
+              cx="150" cy="150" r="120" fill="transparent"
               stroke={isInterruptGroup ? "#ef4444" : "#1a1a1a"}
-              strokeWidth="5" 
-              strokeDasharray={circumference} 
-              strokeDashoffset={dashoffset}
+              strokeWidth="8" 
+              strokeDasharray={2 * Math.PI * 120} 
+              strokeDashoffset={2 * Math.PI * 120 - (timeLeft / safeMaxTime) * (2 * Math.PI * 120)}
               strokeLinecap="butt" 
               className="transition-all duration-1000 ease-linear"
             />
           </svg>
 
-          <div className="absolute flex flex-col items-center justify-center w-48 h-48 rounded-full bg-[#1a1a1a] z-10">
+          <div className="absolute flex flex-col items-center justify-center w-[50vmin] h-[50vmin] rounded-full bg-[#1a1a1a] z-10">
              {isInterruptGroup && <AlertTriangle className="w-8 h-8 text-red-500 mb-2 animate-blink" />}
-             <div className={`text-6xl font-bold tracking-normal tabular-nums ${isInterruptGroup ? 'text-red-500' : 'text-gray-200'}`}>
+             <div className={`text-[15vmin] font-bold tracking-normal tabular-nums ${isInterruptGroup ? 'text-red-500' : 'text-gray-200'}`}>
                {timeLeft}
              </div>
-             <div className="text-dystopia-grey text-[10px] mt-4 tracking-[0.2em] text-center px-4 leading-tight font-mono uppercase">
+             <div className="text-dystopia-grey text-[2.5vmin] mt-4 tracking-[0.2em] text-center px-4 leading-tight font-mono uppercase">
                {timerStatus === 'RUNNING_60' ? 'TAP TO INTERRUPT' : 
                 timerStatus === 'INTERRUPT_SPEECH' ? 'SPEAKING... TAP TO STOP' :
                 timerStatus === 'RUNNING_5' ? 'EMERGENCY OVERRIDE' : 
