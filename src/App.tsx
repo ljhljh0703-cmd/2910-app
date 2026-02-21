@@ -284,8 +284,8 @@ export default function App() {
               cx="150" cy="150" r="120" fill="transparent"
               stroke={isInterruptGroup ? "#ef4444" : "#1a1a1a"}
               strokeWidth="8" 
-              strokeDasharray={2 * Math.PI * 120} 
-              strokeDashoffset={2 * Math.PI * 120 - (timeLeft / safeMaxTime) * (2 * Math.PI * 120)}
+              strokeDasharray={circumference} 
+              strokeDashoffset={dashoffset}
               strokeLinecap="butt" 
               className="transition-all duration-1000 ease-linear"
             />
